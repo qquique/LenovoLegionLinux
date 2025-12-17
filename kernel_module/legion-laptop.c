@@ -1652,6 +1652,18 @@ static int wmi_exec_arg(const char *guid, u8 instance, u32 method_id, void *arg,
 	return 0;
 }
 
+static int wmi_exec_query_ints(const char *guid, u8 instance, u8 *res, 
+							 size_t ressize)
+{
+	acpi_status status;
+	struct acpi_buffer out_buffer = { ACPI_ALLOCATE_BUFFER, NULL };
+
+	status = wmi_query_block(guid, instance, &out_buffer);
+
+	return acpi_process_buffer_to_ints(guid, instance, status, &out_buffer,
+						res, ressize);
+}
+
 /* ================================= */
 /* Lenovo WMI config                 */
 /* ================================= */
@@ -1823,6 +1835,8 @@ enum OtherMethodFeature {
 	OtherMethodFeature_TEMP_CPU = 0x05040000,
 	OtherMethodFeature_TEMP_GPU = 0x05050000,
 };
+
+#define LOQ_WMI_FANTABLE_GUID "87FB2A6D-D802-48E7-9208-4576C5F5C8D8"
 
 static ssize_t wmi_other_method_get_value(enum OtherMethodFeature feature_id,
 					  int *value)
@@ -2983,38 +2997,228 @@ struct WMIFanTableRead {
 	u32 FSSA;
 } __packed;
 
+// FACT table for LZCN, NZCN, R3CN
+// each field correspond to a column on a FNT Table
+struct WMIFanTableReadLoq {
+	u16 FNIM; // Powermode
+	u16 FNID; // Fan Id
+	u32 FNLE; // Fan Table Length
+	u16 FNS0; // Fan RPM 1
+	u16 FNS1;
+	u16 FNS2;
+	u16 FNS3;
+	u16 FNS4;
+	u16 FNS5;
+	u16 FNS6;
+	u16 FNS7;
+	u16 FNS8;
+	u16 FNS9; // Fan RPM 10
+	u32 SEID; // Sensor Id
+	u32 STLE; // Sensor Length
+	u16 SST0; // Sensor Temp 1
+	u16 SST1;
+	u16 SST2;
+	u16 SST3;
+	u16 SST4;
+	u16 SST5;
+	u16 SST6;
+	u16 SST7;
+	u16 SST8;
+	u16 SST9; // Sensor Temp 10
+	u8  SOU1;
+	u8  SOU2;
+	u16 CFMS; // Fan Max Speed
+	u8  SOU3; // Design Fan Max Speed Number
+	u8  SOU4; // Fan Min Speed
+	u16 CFIS; // Sensor Min Temperature
+	u16 FSSP; // Fan Speed Step 
+	u16 MST1; // Sensor Max Temperature
+	u16 MST2; // Reserved
+	u16 MSTP; // Sensor Temperature Step
+} __packed;
+
+// From the FNT Table a row is selected by a position related
+// to the powermode (See SFAN Method)
+//
+// PowerMode = Position
+// 0x1  = 0x06
+// 0x2  = 0x03
+// 0x3  = 0x00
+// 0xFF = 0x09
+// 0xE0 = 0x0C
+// 
+// That gives the row with the CPU values, GPU position is +1
+
+#define LOQ_FANTABLE_QUIET_INDEX        0x06
+#define LOQ_FANTABLE_BALANCED_INDEX     0x03
+#define LOQ_FANTABLE_PERFORMANCE_INDEX  0x00
+#define LOQ_FANTABLE_CUSTOM_INDEX       0x09
+#define LOQ_FANTABLE_EXTREME_INDEX      0x0C
+
 static ssize_t wmi_read_fancurve_custom(const struct model_config *model,
 					struct fancurve *fancurve)
 {
 	u8 buffer[88];
 	int err;
 
-	// The output buffer from the ACPI call is 88 bytes and larger
-	// than the returned object
-	pr_info("Size of object: %lu\n", sizeof(struct WMIFanTableRead));
-	err = wmi_exec_noarg_ints(WMI_GUID_LENOVO_FAN_METHOD, 0,
-				  WMI_METHOD_ID_FAN_GET_TABLE, buffer,
-				  sizeof(buffer));
-	print_hex_dump(KERN_DEBUG, "legion_laptop fan table wmi buffer",
-		       DUMP_PREFIX_ADDRESS, 16, 1, buffer, sizeof(buffer),
-		       true);
-	if (!err) {
-		struct WMIFanTableRead *fantable =
-			(struct WMIFanTableRead *)&buffer[0];
-		fancurve->current_point_i = 0;
-		fancurve->size = 10;
-		fancurve->fan_speed_unit = FAN_SPEED_UNIT_PERCENT;
-		fancurve->points[0].speed1 = fantable->FSS0;
-		fancurve->points[1].speed1 = fantable->FSS1;
-		fancurve->points[2].speed1 = fantable->FSS2;
-		fancurve->points[3].speed1 = fantable->FSS3;
-		fancurve->points[4].speed1 = fantable->FSS4;
-		fancurve->points[5].speed1 = fantable->FSS5;
-		fancurve->points[6].speed1 = fantable->FSS6;
-		fancurve->points[7].speed1 = fantable->FSS7;
-		fancurve->points[8].speed1 = fantable->FSS8;
-		fancurve->points[9].speed1 = fantable->FSS9;
-		//fancurve->points[10].speed1 = fantable->FSSA;
+	if (model == &model_lzcn ||
+	    model == &model_nzcn || 
+	    model == &model_r3cn) {
+
+		struct WMIFanTableReadLoq fantable = {0} ;
+		u8* buffer_fact = (u8*)&fantable;
+		unsigned long res;
+		int powermode_fantable_index = 0;
+		int *current_powermode;
+		int powermode_fantable_to_show = 0;
+
+		// if current powermode is different than custom
+		// show current powermode fantable if not use auto_points_defaults_powermode
+		err = wmi_exec_noarg_int(LEGION_WMI_GAMEZONE_GUID, 0,
+						WMI_METHOD_ID_GETSMARTFANMODE, &res);
+		if (!err) {
+			*current_powermode = res;
+		} else {
+			return err;
+		}
+			
+		if (*current_powermode != 0xFF || auto_points_defaults_powermode == 0) {
+			powermode_fantable_to_show = *current_powermode;
+		} else {
+			powermode_fantable_to_show = auto_points_defaults_powermode;
+		}
+
+		switch (powermode_fantable_to_show) {
+			case 0x1: 
+				powermode_fantable_index = LOQ_FANTABLE_QUIET_INDEX;
+				break;
+			case 0x3:
+				powermode_fantable_index = LOQ_FANTABLE_PERFORMANCE_INDEX;
+				break;
+			case 0x2:
+				powermode_fantable_index = LOQ_FANTABLE_BALANCED_INDEX;
+				break;
+			case 0xFF:
+				powermode_fantable_index = LOQ_FANTABLE_CUSTOM_INDEX;
+				break;
+			case 0xE0:
+				powermode_fantable_index = LOQ_FANTABLE_EXTREME_INDEX;
+				break;
+			default:
+				return 0;
+		}
+
+		// Get CPU values
+		err = wmi_exec_query_ints(LOQ_WMI_FANTABLE_GUID, 
+							powermode_fantable_index, buffer_fact, 
+							sizeof(struct WMIFanTableReadLoq));
+		if (!err) {
+			fancurve->current_point_i = 0;
+			fancurve->size = fantable.FNLE;
+			fancurve->fan_speed_unit = FAN_SPEED_UNIT_RPM_HUNDRED;
+			fancurve->points[0].speed1 = fantable.FNS0 / 100;
+			fancurve->points[1].speed1 = fantable.FNS1 / 100;
+			fancurve->points[2].speed1 = fantable.FNS2 / 100;
+			fancurve->points[3].speed1 = fantable.FNS3 / 100;
+			fancurve->points[4].speed1 = fantable.FNS4 / 100;
+			fancurve->points[5].speed1 = fantable.FNS5 / 100;
+			fancurve->points[6].speed1 = fantable.FNS6 / 100;
+			fancurve->points[7].speed1 = fantable.FNS7 / 100;
+			fancurve->points[8].speed1 = fantable.FNS8 / 100;
+			fancurve->points[9].speed1 = fantable.FNS9 / 100;
+			fancurve->points[0].cpu_max_temp_celsius = fantable.SST0;
+			fancurve->points[1].cpu_max_temp_celsius = fantable.SST1;
+			fancurve->points[2].cpu_max_temp_celsius = fantable.SST2;
+			fancurve->points[3].cpu_max_temp_celsius = fantable.SST3;
+			fancurve->points[4].cpu_max_temp_celsius = fantable.SST4;
+			fancurve->points[5].cpu_max_temp_celsius = fantable.SST5;
+			fancurve->points[6].cpu_max_temp_celsius = fantable.SST6;
+			fancurve->points[7].cpu_max_temp_celsius = fantable.SST7;
+			fancurve->points[8].cpu_max_temp_celsius = fantable.SST8;
+			fancurve->points[9].cpu_max_temp_celsius = fantable.SST9;
+		} else {
+			return err;
+		}
+
+		// Get GPU values
+		err = wmi_exec_query_ints(LOQ_WMI_FANTABLE_GUID, 
+							powermode_fantable_index + 1, buffer_fact, 
+							sizeof(struct WMIFanTableReadLoq));
+		if (!err) {
+			fancurve->points[0].speed2 = fantable.FNS0 / 100;
+			fancurve->points[1].speed2 = fantable.FNS1 / 100;
+			fancurve->points[2].speed2 = fantable.FNS2 / 100;
+			fancurve->points[3].speed2 = fantable.FNS3 / 100;
+			fancurve->points[4].speed2 = fantable.FNS4 / 100;
+			fancurve->points[5].speed2 = fantable.FNS5 / 100;
+			fancurve->points[6].speed2 = fantable.FNS6 / 100;
+			fancurve->points[7].speed2 = fantable.FNS7 / 100;
+			fancurve->points[8].speed2 = fantable.FNS8 / 100;
+			fancurve->points[9].speed2 = fantable.FNS9 / 100;
+
+			fancurve->points[0].gpu_max_temp_celsius = fantable.SST0;
+			fancurve->points[1].gpu_max_temp_celsius = fantable.SST1;
+			fancurve->points[2].gpu_max_temp_celsius = fantable.SST2;
+			fancurve->points[3].gpu_max_temp_celsius = fantable.SST3;
+			fancurve->points[4].gpu_max_temp_celsius = fantable.SST4;
+			fancurve->points[5].gpu_max_temp_celsius = fantable.SST5;
+			fancurve->points[6].gpu_max_temp_celsius = fantable.SST6;
+			fancurve->points[7].gpu_max_temp_celsius = fantable.SST7;
+			fancurve->points[8].gpu_max_temp_celsius = fantable.SST8;
+			fancurve->points[9].gpu_max_temp_celsius = fantable.SST9;
+		} else {
+			return err;
+		}
+
+		// Get IC values ???
+		err = wmi_exec_query_ints(LOQ_WMI_FANTABLE_GUID, 
+							powermode_fantable_index + 2, buffer_fact, 
+							sizeof(struct WMIFanTableReadLoq));
+		if (!err) {
+			fancurve->points[0].ic_max_temp_celsius = fantable.SST0;
+			fancurve->points[1].ic_max_temp_celsius = fantable.SST1;
+			fancurve->points[2].ic_max_temp_celsius = fantable.SST2;
+			fancurve->points[3].ic_max_temp_celsius = fantable.SST3;
+			fancurve->points[4].ic_max_temp_celsius = fantable.SST4;
+			fancurve->points[5].ic_max_temp_celsius = fantable.SST5;
+			fancurve->points[6].ic_max_temp_celsius = fantable.SST6;
+			fancurve->points[7].ic_max_temp_celsius = fantable.SST7;
+			fancurve->points[8].ic_max_temp_celsius = fantable.SST8;
+			fancurve->points[9].ic_max_temp_celsius = fantable.SST9;
+		} else {
+			return err;
+		}
+		return 0;
+	} else {
+		// keep the old code
+
+		// The output buffer from the ACPI call is 88 bytes and larger
+		// than the returned object
+		pr_info("Size of object: %lu\n", sizeof(struct WMIFanTableRead));
+		err = wmi_exec_noarg_ints(WMI_GUID_LENOVO_FAN_METHOD, 0,
+						WMI_METHOD_ID_FAN_GET_TABLE, buffer,
+						sizeof(buffer));
+		print_hex_dump(KERN_DEBUG, "legion_laptop fan table wmi buffer",
+						DUMP_PREFIX_ADDRESS, 16, 1, buffer, sizeof(buffer),
+						true);
+		if (!err) {
+			struct WMIFanTableRead *fantable =
+				(struct WMIFanTableRead *)&buffer[0];
+			fancurve->current_point_i = 0;
+			fancurve->size = 10;
+			fancurve->fan_speed_unit = FAN_SPEED_UNIT_PERCENT;
+			fancurve->points[0].speed1 = fantable->FSS0;
+			fancurve->points[1].speed1 = fantable->FSS1;
+			fancurve->points[2].speed1 = fantable->FSS2;
+			fancurve->points[3].speed1 = fantable->FSS3;
+			fancurve->points[4].speed1 = fantable->FSS4;
+			fancurve->points[5].speed1 = fantable->FSS5;
+			fancurve->points[6].speed1 = fantable->FSS6;
+			fancurve->points[7].speed1 = fantable->FSS7;
+			fancurve->points[8].speed1 = fantable->FSS8;
+			fancurve->points[9].speed1 = fantable->FSS9;
+			//fancurve->points[10].speed1 = fantable->FSSA;
+		}
 	}
 	return err;
 }
@@ -3093,7 +3297,6 @@ struct WMIFanTableWriteLoq {
 static ssize_t wmi_write_fancurve_defaults(struct legion_private *priv, int value)
 {
 	int err = -1;
-	unsigned long res;
 	struct WMIFanTableWriteLoq fan_table = {0} ;
 
 	if (!(priv->conf == &model_lzcn  ||

@@ -3265,7 +3265,7 @@ static ssize_t wmi_write_fancurve_custom(const struct model_config *model,
 	return err;
 }
 
-struct WMIFanTableWriteLoq {
+struct WMIFanTableIndicesWriteLoq { // SFAN Structure
 	u8 F000; // Thermal Mode/Powermode
 	u8 F001; // not used
 	u32 F002; // not used
@@ -3294,41 +3294,120 @@ struct WMIFanTableWriteLoq {
 	u8 F019; // not used
 } __packed;
 
-static ssize_t wmi_write_fancurve_defaults(struct legion_private *priv, int value)
+static ssize_t wmi_write_fancurve_indices(struct legion_private *priv, int powermode, u8 values[])
 {
 	int err = -1;
-	struct WMIFanTableWriteLoq fan_table = {0} ;
+	struct WMIFanTableIndicesWriteLoq fan_table = {0} ;
+	unsigned long res;
+	int *current_powermode;
+	if (!(priv->conf == &model_lzcn  ||
+		  priv->conf == &model_nzcn ||
+			priv->conf == &model_necn  ||
+			priv->conf == &model_r3cn)) {
+			pr_info("wmi_write_fancurve_indices not tested/supported for your model\n");
+		  return err;
+	};
+	// if current powermode is different than custom
+	// do nothing
+	err = wmi_exec_noarg_int(LEGION_WMI_GAMEZONE_GUID, 0,
+					WMI_METHOD_ID_GETSMARTFANMODE, &res);
+	if (!err) {
+		*current_powermode = res;
+		if (*current_powermode != 0xFF){
+			pr_info("wmi_write_fancurve_indices: not in custom powermode, ignored: %d\n", *current_powermode);
+			return err;
+		}
+	} else {
+		return err;
+	}
+	// if powermode = 0, auto_points_default_powermode has not been set
+	// so use the current powermode from wmi
+	
+	fan_table.F000 = powermode != 0?powermode:*current_powermode;
+	fan_table.F003 = values[0];
+	fan_table.F004 = values[1];
+	fan_table.F005 = values[2];
+	fan_table.F006 = values[3];
+	fan_table.F007 = values[4];
+	fan_table.F008 = values[5];
+	fan_table.F009 = values[6];
+	fan_table.F00A = values[7];
+	fan_table.F00B = values[8];
+	fan_table.F00C = values[9];
+
+	u8* buffer = (u8*)&fan_table;
+
+	err = wmi_exec_arg(WMI_GUID_LENOVO_FAN_METHOD, 0,
+						WMI_METHOD_ID_FAN_SET_TABLE, buffer, sizeof(struct WMIFanTableIndicesWriteLoq));
+	return err;
+}
+
+
+struct WMIFanTableIndicesReadLoq { // GFAN FAT2 Structure
+  u32 FTLE; // Fan Table Length
+	u32 FTS0; 
+	u32 FTS1;
+	u32 FTS2;
+	u32 FTS3;
+	u32 FTS4;
+	u32 FTS5;
+	u32 FTS6;
+	u32 FTS7;
+	u32 FTS8;
+	u32 FTS9;
+	u32 FTSL; // Sensor Table Length
+	u32 FSS0; // same values as FTS
+	u32 FSS1;
+	u32 FSS2;
+	u32 FSS3;
+	u32 FSS4;
+	u32 FSS5;
+	u32 FSS6;
+	u32 FSS7;
+	u32 FSS8;
+	u32 FSS9;
+} __packed;
+
+static ssize_t wmi_read_fancurve_indices(struct legion_private *priv, u8 values[])
+{
+	int err = -1;
+	struct WMIFanTableIndicesReadLoq fan_table = {0} ;
+	u8* buffer = (u8*)&fan_table;
+	// WMAB requires 2 params for arg2 FID0, SID0
+	// even if it doesnt use them
+	u8 wmi_args[] = {0, 0};
+	struct acpi_buffer params = {};
 
 	if (!(priv->conf == &model_lzcn  ||
 		  priv->conf == &model_nzcn ||
 			priv->conf == &model_necn  ||
 			priv->conf == &model_r3cn)) {
-			pr_info("auto_points_defaults not supported for your model\n");
+			pr_info("wmi_read_fancurve_indices not tested/supported for your model\n");
 		  return err;
 	};
-	pr_info("auto_points_defaults called\n");
-	fan_table.F000 = value;
-	// reusing the fancurve speed1, needs a new option on hwmon ? / acpi/firmware? 
-	// fan_table.F003 = fancurve->points[0].idx;
-	// Writing the defaults
-	fan_table.F003 = 0x01;
-	fan_table.F004 = 0x02;
-	fan_table.F005 = 0x03;
-	fan_table.F006 = 0x04;
-	fan_table.F007 = 0x05;
-	fan_table.F008 = 0x06;
-	fan_table.F009 = 0x07;
-	fan_table.F00A = 0x08;
-	fan_table.F00B = 0x09;
-	fan_table.F00C = 0x0A;
 
-	u8* buffer = (u8*)&fan_table;
-
-	err = wmi_exec_arg(WMI_GUID_LENOVO_FAN_METHOD, 0,
-						WMI_METHOD_ID_FAN_SET_TABLE, buffer, sizeof(struct WMIFanTableWriteLoq));
+	params.length = sizeof(wmi_args);
+	params.pointer = &wmi_args;
+	err = wmi_exec_ints(WMI_GUID_LENOVO_FAN_METHOD, 0,
+					WMI_METHOD_ID_FAN_GET_TABLE, &params,
+					buffer, sizeof(struct WMIFanTableIndicesReadLoq));
+	if (!err) {
+		print_hex_dump(KERN_DEBUG, "legion_laptop fan table indices wmi buffer",
+					DUMP_PREFIX_ADDRESS, 16, 1, buffer, sizeof(struct WMIFanTableIndicesReadLoq),
+					true);
+		values[0] = fan_table.FTS0;
+		values[1] = fan_table.FTS1;
+		values[2] = fan_table.FTS2;
+		values[3] = fan_table.FTS3;
+		values[4] = fan_table.FTS4;
+		values[5] = fan_table.FTS5;
+		values[6] = fan_table.FTS6;
+		values[7] = fan_table.FTS7;
+		values[8] = fan_table.FTS8;
+		values[9] = fan_table.FTS9;
+	}
 	return err;
 }
-
 /* Read the fan curve from the EC.
  *
  * In newer models (>=2022) there is an ACPI/WMI to read fan curve as
@@ -5759,6 +5838,7 @@ static ssize_t auto_points_defaults_store(struct device *dev,
 {
 	int value;
 	int err;
+	u8 default_indices[10] = {0x1, 0x2, 0x3, 0x4, 0x5, 0x6, 0x7, 0x8, 0x9, 0xA};
 	struct legion_private *priv = dev_get_drvdata(dev);
 
 	err = kstrtoint(buf, 0, &value);
@@ -5779,7 +5859,7 @@ static ssize_t auto_points_defaults_store(struct device *dev,
 	}
 
 	mutex_lock(&priv->fancurve_mutex);
-	err = wmi_write_fancurve_defaults(priv, value);
+	err = wmi_write_fancurve_indices(priv, value, default_indices);
 	if (err) {
 		err = -1;
 		pr_info("Failed to write auto points defaults\n");
@@ -5808,6 +5888,100 @@ static ssize_t auto_points_defaults_show(struct device *dev,
 	if (power_mode != LEGION_WMI_POWERMODE_CUSTOM) 
 		auto_points_defaults_powermode = 0;
 	return sprintf(buf, "%d\n", auto_points_defaults_powermode);
+}
+
+static ssize_t fancurve_indices_store(struct device *dev,
+				  struct device_attribute *devattr,
+				  const char *buf, size_t count)
+{
+	u8 values[10] = {0};
+	int nchars = 0;
+	int err=-1;
+	struct legion_private *priv = dev_get_drvdata(dev);
+  char buffer[64];
+	char *pos = buffer;
+	char *spos;
+	int val;
+	int ret;
+	// copy buffer to not generate discard qualifiers warnings
+	while (*(buf + nchars) != '\0' && nchars < 64) {
+		*(pos + nchars) = *(buf + nchars);
+		nchars++;
+	};
+	*(pos + nchars) = '\0';
+	// process this pos ...
+	nchars = 0;
+	while (nchars < 10 && *pos != '\0') {
+		while (*pos == ' ' || *pos == ',') {
+			pos++;
+		}
+		if (*pos == '\0') break;
+		spos = pos;
+		while (*pos != '\0' && *pos != ',' && *pos != ' '){
+			pos++;
+		}
+	  char back = *pos;
+		*pos='\0';
+		ret = kstrtoint(spos, 10, &val);
+		*pos = back;
+		if (ret < 0) {
+			pr_info("Parsing fancurve indices store failed: error:%d\n", ret);
+			goto error;
+		}
+		if (val > 10 || val < 0) {
+			pr_info("Parsing fancurve indices store failed: invalid value:%i\n", val);
+			goto error;
+		}
+		values[nchars++] = (u8)val;
+		if (*pos == '\0') break;
+		pos++;
+	}
+	if (nchars != 10) {
+		pr_info("Parsing fancurve indices store failed: insufficient indices:%d\n", nchars);
+		goto error;
+	}
+
+	mutex_lock(&priv->fancurve_mutex);
+	err = wmi_write_fancurve_indices(priv, auto_points_defaults_powermode, values);
+	if (err) {
+		err = -1;
+		pr_info("Failed to write fancurve indices\n");
+		goto error_unlock;
+	}
+	mutex_unlock(&priv->fancurve_mutex);
+	return count;
+
+error_unlock:
+	mutex_unlock(&priv->fancurve_mutex);
+error:
+	return err;
+}
+
+static ssize_t fancurve_indices_show(struct device *dev,
+				 struct device_attribute *devattr, char *buf)
+{
+	struct legion_private *priv = dev_get_drvdata(dev);
+	int err;
+	u8 values[10] = {0};
+
+	mutex_lock(&priv->fancurve_mutex);
+	err = wmi_read_fancurve_indices(priv, values);
+	if (err) {
+		err = -1;
+		pr_info("Failed to read fancurve indices\n");
+		goto error_unlock;
+	}
+	mutex_unlock(&priv->fancurve_mutex);
+	return sprintf(buf, "%d,%d,%d,%d,%d,%d,%d,%d,%d,%d\n", 
+								values[0], values[1],
+								values[2], values[3],
+								values[4], values[5],
+								values[6], values[7],
+								values[8], values[9]);
+error_unlock:
+	mutex_unlock(&priv->fancurve_mutex);
+error:
+	return err;
 }
 
 // pwm1
@@ -6025,6 +6199,7 @@ static SENSOR_DEVICE_ATTR_2_RW(pwm1_auto_point10_decel, autopoint,
 //size
 static SENSOR_DEVICE_ATTR_2_RW(auto_points_size, autopoint, FANCURVE_SIZE, 0);
 static SENSOR_DEVICE_ATTR_2_RW(auto_points_defaults, auto_points_defaults, 0, 0);
+static SENSOR_DEVICE_ATTR_2_RW(fancurve_indices, fancurve_indices, 0, 0);
 
 static ssize_t minifancurve_show(struct device *dev,
 				 struct device_attribute *devattr, char *buf)
@@ -6247,7 +6422,8 @@ static struct attribute *fancurve_hwmon_attributes[] = {
 	&sensor_dev_attr_auto_points_size.dev_attr.attr,
 	&sensor_dev_attr_minifancurve.dev_attr.attr,
 	&sensor_dev_attr_pwm1_mode.dev_attr.attr,
-	&sensor_dev_attr_auto_points_defaults.dev_attr.attr, NULL
+	&sensor_dev_attr_auto_points_defaults.dev_attr.attr,
+	&sensor_dev_attr_fancurve_indices.dev_attr.attr, NULL
 };
 
 static umode_t legion_hwmon_is_visible(struct kobject *kobj,

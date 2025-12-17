@@ -2524,6 +2524,9 @@ struct legion_private {
 	struct ecram_memoryio ec_memoryio;
 };
 
+// keep state of fancurve defaults used by auto_points_defaults
+static int auto_points_defaults_powermode = 0;
+
 // shared between different drivers: WMI, platform and protected by mutex
 static struct legion_private *legion_shared;
 static struct legion_private _priv;
@@ -3100,7 +3103,7 @@ static ssize_t wmi_write_fancurve_defaults(struct legion_private *priv, int valu
 			pr_info("auto_points_defaults not supported for your model\n");
 		  return err;
 	};
-	pr_info("auto_points_defaults\n");
+	pr_info("auto_points_defaults called\n");
 	fan_table.F000 = value;
 	// reusing the fancurve speed1, needs a new option on hwmon ? / acpi/firmware? 
 	// fan_table.F003 = fancurve->points[0].idx;
@@ -5579,6 +5582,7 @@ static ssize_t auto_points_defaults_store(struct device *dev,
 		pr_info("Failed to write auto points defaults\n");
 		goto error_unlock;
 	}
+	auto_points_defaults_powermode = value;
 	mutex_unlock(&priv->fancurve_mutex);
 	return count;
 
@@ -5591,7 +5595,16 @@ error:
 static ssize_t auto_points_defaults_show(struct device *dev,
 				 struct device_attribute *devattr, char *buf)
 {
-	return sprintf(buf, "%d\n", 0);
+	struct legion_private *priv = dev_get_drvdata(dev);
+	int power_mode;
+
+	mutex_lock(&priv->fancurve_mutex);
+	read_powermode(priv, &power_mode);
+	mutex_unlock(&priv->fancurve_mutex);
+	// set to 0 if not in CUSTOM mode (pressed Fn-Q)
+	if (power_mode != LEGION_WMI_POWERMODE_CUSTOM) 
+		auto_points_defaults_powermode = 0;
+	return sprintf(buf, "%d\n", auto_points_defaults_powermode);
 }
 
 // pwm1

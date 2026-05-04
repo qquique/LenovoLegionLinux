@@ -213,15 +213,15 @@ enum acpi_paths_inventory_ids {
 };
 
 static const char *default_acpi_paths[ACPI_PATH_MAX] = {
-	[ACPI_PATH_STA]="_STA",
-	[ACPI_PATH_CFG]="_CFG",
-	[ACPI_PATH_READ_RAPIDCHARGE]="VPC0.GBMD",
-	[ACPI_PATH_WRITE_RAPIDCHARGE]="VPC0.SBMC",
-	[ACPI_PATH_READ_POWERMODE]="VPC0.BTSM",
-	[ACPI_PATH_READ_FANSPEED1]="FANS",
-	[ACPI_PATH_READ_FANSPEED2]="FA2S",
-	[ACPI_PATH_READ_CPU_TEMP]="CPUT",
-	[ACPI_PATH_READ_GPU_TEMP]="GPUT",
+	[ACPI_PATH_STA] = "_STA",
+	[ACPI_PATH_CFG] = "_CFG",
+	[ACPI_PATH_READ_RAPIDCHARGE] = "VPC0.GBMD",
+	[ACPI_PATH_WRITE_RAPIDCHARGE] = "VPC0.SBMC",
+	[ACPI_PATH_READ_POWERMODE] = "VPC0.BTSM",
+	[ACPI_PATH_READ_FANSPEED1] = "FANS",
+	[ACPI_PATH_READ_FANSPEED2] = "FA2S",
+	[ACPI_PATH_READ_CPU_TEMP] = "CPUT",
+	[ACPI_PATH_READ_GPU_TEMP] = "GPUT",
 };
 
 struct model_config {
@@ -1460,19 +1460,18 @@ static const struct dmi_system_id optimistic_allowlist[] = {
 /* ================================= */
 /* ACPI and WMI access               */
 /* ================================= */
-//global, 
-//wanted to use _priv->conf but involves 
+//global,
+//wanted to use _priv->conf but involves
 //move all structs/defn from all the way down up
 static const struct model_config *_model;
 
 static const char *get_model_acpi_path(const struct model_config *model, enum acpi_paths_inventory_ids id)
 {
-    if (id < 0 || id >= ACPI_PATH_MAX)
-        return NULL;
-    if (model->acpi_paths[id] != NULL) {
-        return model->acpi_paths[id];
-    }
-    return default_acpi_paths[id];
+	if (id < 0 || id >= ACPI_PATH_MAX)
+		return NULL;
+	if (model->acpi_paths[id] != NULL)
+		return model->acpi_paths[id];
+	return default_acpi_paths[id];
 }
 
 // function from ideapad-laptop.c
@@ -1483,13 +1482,11 @@ static int eval_int(struct acpi_device *adev, const char *name, unsigned long *r
 	acpi_handle handle;
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 0, 0)
 	status = acpi_get_handle(NULL, (char *) name, &handle);
-	if (ACPI_FAILURE(status)){
+	if (ACPI_FAILURE(status))
 		return -EIO;
-	}
 #else
-	if (!adev) {
+	if (!adev)
 		return -ENODEV;
-	}
 	handle = adev->handle;
 #endif
 	status = acpi_evaluate_integer(handle, (char *)name, NULL, &result);
@@ -1509,9 +1506,8 @@ static int exec_simple_method(struct acpi_device *adev, const char *name,
 	acpi_status status;
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 0, 0)
 	status = acpi_get_handle(NULL, (char *)name, &handle);
-	if (ACPI_FAILURE(status)){
+	if (ACPI_FAILURE(status))
 		return -EIO;
-	}
 #else
 	handle = adev->handle;
 #endif
@@ -1526,6 +1522,7 @@ static int exec_sbmc(struct acpi_device *adev, unsigned long arg)
 {
 	// \_SB.PCI0.LPC0.EC0.VPC0.SBMC
 	const char *acpi_path;
+
 	acpi_path = get_model_acpi_path(_model, ACPI_PATH_WRITE_RAPIDCHARGE);
 	return exec_simple_method(adev, acpi_path, arg);
 }
@@ -1539,6 +1536,7 @@ static int exec_sbmc(struct acpi_device *adev, unsigned long arg)
 static int eval_gbmd(struct acpi_device *adev, unsigned long *res)
 {
 	const char *acpi_path;
+
 	acpi_path = get_model_acpi_path(_model, ACPI_PATH_READ_RAPIDCHARGE);
 	return eval_int(adev, acpi_path, res);
 }
@@ -1547,6 +1545,7 @@ static int eval_spmo(struct acpi_device *adev, unsigned long *res)
 {
 	// \_SB.PCI0.LPC0.EC0.QCHO
 	const char *acpi_path;
+
 	acpi_path = get_model_acpi_path(_model, ACPI_PATH_READ_POWERMODE);
 	return eval_int(adev, acpi_path, res);
 }
@@ -3723,10 +3722,10 @@ static ssize_t ec_read_powermode(struct legion_private *priv, int *powermode)
 static ssize_t ec_write_powermode(struct legion_private *priv, u8 value)
 {
 	if (value != LEGION_EC_POWERMODE_BALANCED &&
-    value != LEGION_EC_POWERMODE_PERFORMANCE &&
-    value != LEGION_EC_POWERMODE_QUIET &&
-    value != LEGION_EC_POWERMODE_CUSTOM &&
-    value != LEGION_EC_POWERMODE_EXTREME) {
+			value != LEGION_EC_POWERMODE_PERFORMANCE &&
+			value != LEGION_EC_POWERMODE_QUIET &&
+			value != LEGION_EC_POWERMODE_CUSTOM &&
+			value != LEGION_EC_POWERMODE_EXTREME) {
 		pr_info("Unexpected power mode value ignored: %d\n", value);
 		return -ENOMEM;
 	}
@@ -3762,10 +3761,10 @@ static ssize_t wmi_read_powermode(int *powermode)
 static ssize_t wmi_write_powermode(u8 value)
 {
 	if (value != LEGION_WMI_POWERMODE_BALANCED &&
-    value != LEGION_WMI_POWERMODE_PERFORMANCE &&
-    value != LEGION_WMI_POWERMODE_LOW_POWER &&
-    value != LEGION_WMI_POWERMODE_CUSTOM &&
-    value != LEGION_WMI_POWERMODE_MAX_POWER) {
+		value != LEGION_WMI_POWERMODE_PERFORMANCE &&
+		value != LEGION_WMI_POWERMODE_LOW_POWER &&
+		value != LEGION_WMI_POWERMODE_CUSTOM &&
+		value != LEGION_WMI_POWERMODE_MAX_POWER) {
 		pr_info("Unexpected power mode value ignored: %d\n", value);
 		return -ENOMEM;
 	}
@@ -4050,6 +4049,7 @@ static int debugfs_fancurve_show(struct seq_file *s, void *unused)
 	seq_printf(s, "legion_laptop ec_readonly: %d\n", ec_readonly);
 
 	const char *acpi_path;
+
 	acpi_path = get_model_acpi_path(_model, ACPI_PATH_CFG);
 	err = eval_int(priv->adev, acpi_path, &cfg);
 	seq_printf(s, "ACPI CFG error: %d\n", err);
@@ -5220,13 +5220,11 @@ static int legion_platform_profile_probe(void *drvdata, unsigned long *choices)
 	set_bit(PLATFORM_PROFILE_LOW_POWER, choices);
 	set_bit(PLATFORM_PROFILE_BALANCED, choices);
 	set_bit(PLATFORM_PROFILE_PERFORMANCE, choices);
-	if (conf_has_custom_powermode && conf_access_method_powermode == ACCESS_METHOD_WMI) {
+	if (conf_has_custom_powermode && conf_access_method_powermode == ACCESS_METHOD_WMI)
 		set_bit(PLATFORM_PROFILE_CUSTOM, choices);
-	}
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 19, 0)
-	if (conf_has_extreme_powermode && conf_access_method_powermode == ACCESS_METHOD_WMI) {
+	if (conf_has_extreme_powermode && conf_access_method_powermode == ACCESS_METHOD_WMI)
 		set_bit(PLATFORM_PROFILE_MAX_POWER, choices);
-	}
 #endif
 	return 0;
 }
@@ -6068,8 +6066,8 @@ static int acpi_init(struct legion_private *priv, struct acpi_device *adev)
 	bool skip_acpi_sta_check;
 	struct device *dev = &priv->platform_device->dev;
 	const char *acpi_path;
-	acpi_path = get_model_acpi_path(_model, ACPI_PATH_WRITE_RAPIDCHARGE);
 
+	acpi_path = get_model_acpi_path(_model, ACPI_PATH_WRITE_RAPIDCHARGE);
 	priv->adev = adev;
 #if LINUX_VERSION_CODE <= KERNEL_VERSION(7, 0, 0)
 	if (!priv->adev) {
@@ -6077,7 +6075,7 @@ static int acpi_init(struct legion_private *priv, struct acpi_device *adev)
 		goto err_acpi_init;
 	}
 #else
-  dev_info(dev, "Ignoring ACPI handle\n");
+	dev_info(dev, "Ignoring ACPI handle\n");
 #endif
 	skip_acpi_sta_check = force || (!priv->conf->acpi_check_dev);
 	if (!skip_acpi_sta_check) {
@@ -6562,7 +6560,9 @@ static struct platform_driver legion_driver = {
 static int __init legion_init(void)
 {
 	int err;
-
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 0, 0)
+	static struct platform_device *legion_pdev;
+#endif
 	pr_info("Loading legion_laptop\n");
 	err = platform_driver_register(&legion_driver);
 	if (err) {
@@ -6570,8 +6570,7 @@ static int __init legion_init(void)
 		return err;
 	}
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 0, 0)
-	static struct platform_device *legion_pdev;
-  legion_pdev = platform_device_register_simple("legion", -1, NULL, 0);
+	legion_pdev = platform_device_register_simple("legion", -1, NULL, 0);
 	if (IS_ERR(legion_pdev)) {
 		pr_err("Failed to allocate virtual legion device\n");
 		platform_driver_unregister(&legion_driver);
@@ -6586,7 +6585,7 @@ module_init(legion_init);
 static void __exit legion_exit(void)
 {
 	platform_driver_unregister(&legion_driver);
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 0 , 0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 0, 0)
 	platform_device_unregister(_priv.platform_device);
 #endif
 	pr_info("legion_laptop exit\n");

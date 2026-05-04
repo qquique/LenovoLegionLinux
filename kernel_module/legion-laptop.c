@@ -198,6 +198,32 @@ enum access_method {
 	ACCESS_METHOD_EC3 = 11, // loq
 };
 
+// acpi paths used by this driver
+enum acpi_paths_inventory_ids {
+	ACPI_PATH_STA = 0, // _STA
+	ACPI_PATH_CFG,     // _CFG
+	ACPI_PATH_READ_RAPIDCHARGE, // GBMD
+	ACPI_PATH_WRITE_RAPIDCHARGE,// SBMC
+	ACPI_PATH_READ_POWERMODE, // BTSM
+	ACPI_PATH_READ_FANSPEED1, // FANS
+	ACPI_PATH_READ_FANSPEED2, // FA2S
+	ACPI_PATH_READ_CPU_TEMP, // CPUT
+	ACPI_PATH_READ_GPU_TEMP, // GPUT
+	ACPI_PATH_MAX // not a PATH just the max nbr of this enum
+};
+
+static const char *default_acpi_paths[ACPI_PATH_MAX] = {
+	[ACPI_PATH_STA]="_STA",
+	[ACPI_PATH_CFG]="_CFG",
+	[ACPI_PATH_READ_RAPIDCHARGE]="VPC0.GBMD",
+	[ACPI_PATH_WRITE_RAPIDCHARGE]="VPC0.SBMC",
+	[ACPI_PATH_READ_POWERMODE]="VPC0.BTSM",
+	[ACPI_PATH_READ_FANSPEED1]="FANS",
+	[ACPI_PATH_READ_FANSPEED2]="FA2S",
+	[ACPI_PATH_READ_CPU_TEMP]="CPUT",
+	[ACPI_PATH_READ_GPU_TEMP]="GPUT",
+};
+
 struct model_config {
 	const struct ec_register_offsets *registers;
 	bool check_embedded_controller_id;
@@ -224,6 +250,7 @@ struct model_config {
 
 	phys_addr_t ramio_physical_start;
 	size_t ramio_size;
+	const char *acpi_paths[ACPI_PATH_MAX];
 };
 
 /* =================================== */
@@ -965,7 +992,11 @@ static const struct model_config model_lzcn = {
 	.access_method_fanfullspeed = ACCESS_METHOD_WMI3,
 	.acpi_check_dev = false,
 	.ramio_physical_start = 0xFE0B0400,
-	.ramio_size = 0x600
+	.ramio_size = 0x600,
+	.acpi_paths = {
+		[ACPI_PATH_STA] = "\\_SB.PC00.LPCB.EC0.VPC0._STA",
+		[ACPI_PATH_CFG] = "\\_SB.PC00.LPCB.EC0.VPC0._CFG"
+	}
 };
 
 // LOQ Model 2024
@@ -1429,13 +1460,38 @@ static const struct dmi_system_id optimistic_allowlist[] = {
 /* ================================= */
 /* ACPI and WMI access               */
 /* ================================= */
+//global, 
+//wanted to use _priv->conf but involves 
+//move all structs/defn from all the way down up
+static const struct model_config *_model;
+
+static const char *get_model_acpi_path(const struct model_config *model, enum acpi_paths_inventory_ids id)
+{
+    if (id < 0 || id >= ACPI_PATH_MAX)
+        return NULL;
+    if (model->acpi_paths[id] != NULL) {
+        return model->acpi_paths[id];
+    }
+    return default_acpi_paths[id];
+}
 
 // function from ideapad-laptop.c
-static int eval_int(acpi_handle handle, const char *name, unsigned long *res)
+static int eval_int(struct acpi_device *adev, const char *name, unsigned long *res)
 {
 	unsigned long long result;
 	acpi_status status;
-
+	acpi_handle handle;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 0, 0)
+	status = acpi_get_handle(NULL, (char *) name, &handle);
+	if (ACPI_FAILURE(status)){
+		return -EIO;
+	}
+#else
+	if (!adev) {
+		return -ENODEV;
+	}
+	handle = adev->handle;
+#endif
 	status = acpi_evaluate_integer(handle, (char *)name, NULL, &result);
 	if (ACPI_FAILURE(status))
 		return -EIO;
@@ -1446,20 +1502,32 @@ static int eval_int(acpi_handle handle, const char *name, unsigned long *res)
 }
 
 // function from ideapad-laptop.c
-static int exec_simple_method(acpi_handle handle, const char *name,
+static int exec_simple_method(struct acpi_device *adev, const char *name,
 			      unsigned long arg)
 {
-	acpi_status status =
+	acpi_handle handle;
+	acpi_status status;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 0, 0)
+	status = acpi_get_handle(NULL, (char *)name, &handle);
+	if (ACPI_FAILURE(status)){
+		return -EIO;
+	}
+#else
+	handle = adev->handle;
+#endif
+	status =
 		acpi_execute_simple_method(handle, (char *)name, arg);
 
 	return ACPI_FAILURE(status) ? -EIO : 0;
 }
 
 // function from ideapad-laptop.c
-static int exec_sbmc(acpi_handle handle, unsigned long arg)
+static int exec_sbmc(struct acpi_device *adev, unsigned long arg)
 {
 	// \_SB.PCI0.LPC0.EC0.VPC0.SBMC
-	return exec_simple_method(handle, "VPC0.SBMC", arg);
+	const char *acpi_path;
+	acpi_path = get_model_acpi_path(_model, ACPI_PATH_WRITE_RAPIDCHARGE);
+	return exec_simple_method(adev, acpi_path, arg);
 }
 
 //static int eval_qcho(acpi_handle handle, unsigned long *res)
@@ -1468,15 +1536,19 @@ static int exec_sbmc(acpi_handle handle, unsigned long arg)
 //	return eval_int(handle, "QCHO", res);
 //}
 
-static int eval_gbmd(acpi_handle handle, unsigned long *res)
+static int eval_gbmd(struct acpi_device *adev, unsigned long *res)
 {
-	return eval_int(handle, "VPC0.GBMD", res);
+	const char *acpi_path;
+	acpi_path = get_model_acpi_path(_model, ACPI_PATH_READ_RAPIDCHARGE);
+	return eval_int(adev, acpi_path, res);
 }
 
-static int eval_spmo(acpi_handle handle, unsigned long *res)
+static int eval_spmo(struct acpi_device *adev, unsigned long *res)
 {
 	// \_SB.PCI0.LPC0.EC0.QCHO
-	return eval_int(handle, "VPC0.BTSM", res);
+	const char *acpi_path;
+	acpi_path = get_model_acpi_path(_model, ACPI_PATH_READ_POWERMODE);
+	return eval_int(adev, acpi_path, res);
 }
 
 static int acpi_process_buffer_to_ints(const char *id_name, int id_nr,
@@ -2711,9 +2783,9 @@ static ssize_t ec_read_fanspeed(struct ecram *ecram,
 }
 
 // '\_SB.PCI0.LPC0.EC0.FANS
-#define ACPI_PATH_FAN_SPEED1 "FANS"
+// #define ACPI_PATH_FAN_SPEED1 "FANS"
 // '\_SB.PCI0.LPC0.EC0.FA2S
-#define ACPI_PATH_FAN_SPEED2 "FA2S"
+// #define ACPI_PATH_FAN_SPEED2 "FA2S"
 
 static ssize_t acpi_read_fanspeed(struct legion_private *priv, int fan_id,
 				  int *value)
@@ -2723,23 +2795,23 @@ static ssize_t acpi_read_fanspeed(struct legion_private *priv, int fan_id,
 	const char *acpi_path;
 
 	if (fan_id == 0) {
-		acpi_path = ACPI_PATH_FAN_SPEED1;
+		acpi_path = get_model_acpi_path(_model, ACPI_PATH_READ_FANSPEED1);
 	} else if (fan_id == 1) {
-		acpi_path = ACPI_PATH_FAN_SPEED2;
+		acpi_path = get_model_acpi_path(_model, ACPI_PATH_READ_FANSPEED2);
 	} else {
 		// TODO: use all correct error codes
 		return -EEXIST;
 	}
-	err = eval_int(priv->adev->handle, acpi_path, &acpi_value);
+	err = eval_int(priv->adev, acpi_path, &acpi_value);
 	if (!err)
 		*value = (int)acpi_value * 100;
 	return err;
 }
 
 // '\_SB.PCI0.LPC0.EC0.CPUT
-#define ACPI_PATH_CPU_TEMP "CPUT"
+// #define ACPI_PATH_CPU_TEMP "CPUT"
 // '\_SB.PCI0.LPC0.EC0.GPUT
-#define ACPI_PATH_GPU_TEMP "GPUT"
+// #define ACPI_PATH_GPU_TEMP "GPUT"
 
 static ssize_t acpi_read_temperature(struct legion_private *priv, int fan_id,
 				     int *value)
@@ -2749,14 +2821,14 @@ static ssize_t acpi_read_temperature(struct legion_private *priv, int fan_id,
 	const char *acpi_path;
 
 	if (fan_id == 0) {
-		acpi_path = ACPI_PATH_CPU_TEMP;
+		acpi_path = get_model_acpi_path(_model, ACPI_PATH_READ_CPU_TEMP);
 	} else if (fan_id == 1) {
-		acpi_path = ACPI_PATH_GPU_TEMP;
+		acpi_path = get_model_acpi_path(_model, ACPI_PATH_READ_GPU_TEMP);
 	} else {
 		// TODO: use all correct error codes
 		return -EEXIST;
 	}
-	err = eval_int(priv->adev->handle, acpi_path, &acpi_value);
+	err = eval_int(priv->adev, acpi_path, &acpi_value);
 	if (!err)
 		*value = (int)acpi_value;
 	return err;
@@ -3669,7 +3741,7 @@ static ssize_t acpi_read_powermode(struct legion_private *priv, int *powermode)
 
 	// spmo method not always available
 	// \_SB.PCI0.LPC0.EC0.SPMO
-	err = eval_spmo(priv->adev->handle, &acpi_powermode);
+	err = eval_spmo(priv->adev, &acpi_powermode);
 	*powermode = (int)acpi_powermode;
 	return err;
 }
@@ -3783,7 +3855,7 @@ static int acpi_read_rapidcharge(struct acpi_device *adev, bool *state)
 	 * return 0;
 	 */
 
-	err = eval_gbmd(adev->handle, &result);
+	err = eval_gbmd(adev, &result);
 	if (err)
 		return err;
 
@@ -3797,7 +3869,7 @@ static int acpi_write_rapidcharge(struct acpi_device *adev, bool state)
 	unsigned long fct_nr = state > 0 ? FCT_RAPID_CHARGE_ON :
 					   FCT_RAPID_CHARGE_OFF;
 
-	err = exec_sbmc(adev->handle, fct_nr);
+	err = exec_sbmc(adev, fct_nr);
 	pr_info("Set rapidcharge to %d by calling %lu: result: %d\n", state,
 		fct_nr, err);
 	return err;
@@ -3977,7 +4049,9 @@ static int debugfs_fancurve_show(struct seq_file *s, void *unused)
 	seq_printf(s, "legion_laptop features: %s\n", LEGIONFEATURES);
 	seq_printf(s, "legion_laptop ec_readonly: %d\n", ec_readonly);
 
-	err = eval_int(priv->adev->handle, "VPC0._CFG", &cfg);
+	const char *acpi_path;
+	acpi_path = get_model_acpi_path(_model, ACPI_PATH_CFG);
+	err = eval_int(priv->adev, acpi_path, &cfg);
 	seq_printf(s, "ACPI CFG error: %d\n", err);
 	seq_printf(s, "ACPI CFG: %lu\n", cfg);
 
@@ -5993,22 +6067,29 @@ static int acpi_init(struct legion_private *priv, struct acpi_device *adev)
 	unsigned long cfg;
 	bool skip_acpi_sta_check;
 	struct device *dev = &priv->platform_device->dev;
+	const char *acpi_path;
+	acpi_path = get_model_acpi_path(_model, ACPI_PATH_WRITE_RAPIDCHARGE);
 
 	priv->adev = adev;
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(7, 0, 0)
 	if (!priv->adev) {
 		dev_info(dev, "Could not get ACPI handle\n");
 		goto err_acpi_init;
 	}
-
+#else
+  dev_info(dev, "Ignoring ACPI handle\n");
+#endif
 	skip_acpi_sta_check = force || (!priv->conf->acpi_check_dev);
 	if (!skip_acpi_sta_check) {
-		err = eval_int(priv->adev->handle, "_STA", &cfg);
+		acpi_path = get_model_acpi_path(_model, ACPI_PATH_STA);
+		err = eval_int(priv->adev, acpi_path, &cfg);
 		if (err) {
 			dev_info(dev, "Could not evaluate ACPI _STA\n");
 			goto err_acpi_init;
 		}
 
-		err = eval_int(priv->adev->handle, "VPC0._CFG", &cfg);
+		acpi_path = get_model_acpi_path(_model, ACPI_PATH_CFG);
+		err = eval_int(priv->adev, acpi_path, &cfg);
 		if (err) {
 			dev_info(dev, "Could not evaluate ACPI _CFG\n");
 			goto err_acpi_init;
@@ -6267,13 +6348,16 @@ static int legion_add(struct platform_device *pdev)
 		 dmi_sys->ident);
 
 	priv->conf = dmi_sys->driver_data;
-
+	_model = priv->conf;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(7, 0, 0)
 	err = acpi_init(priv, ACPI_COMPANION(&pdev->dev));
 	if (err) {
 		dev_info(&pdev->dev, "Could not init ACPI access: %d\n", err);
 		goto err_acpi_init;
 	}
-
+#else
+	err = acpi_init(priv, NULL);
+#endif
 	// TODO: remove; only used for reverse engineering
 	pr_info("Creating RAM access to embedded controller\n");
 	err = ecram_memoryio_init(&priv->ec_memoryio,
@@ -6451,9 +6535,7 @@ static SIMPLE_DEV_PM_OPS(legion_pm, NULL, legion_pm_resume);
 // same as ideapad
 static const struct acpi_device_id legion_device_ids[] = {
 	// todo: change to "VPC2004", and also ACPI paths
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 0, 0)
-	    { "VPC2004", 0 },
-#else
+#if LINUX_VERSION_CODE < KERNEL_VERSION(7, 0, 0)
 	    { "PNP0C09", 0 },
 #endif
 	{ "", 0 },
@@ -6470,8 +6552,10 @@ static struct platform_driver legion_driver = {
 	.resume = legion_resume,
 	.driver = {
 		.name   = "legion",
+#if LINUX_VERSION_CODE < KERNEL_VERSION(7, 0, 0) //leave as virtual driver
 		.pm     = &legion_pm,
 		.acpi_match_table = ACPI_PTR(legion_device_ids),
+#endif
 	},
 };
 
@@ -6485,7 +6569,15 @@ static int __init legion_init(void)
 		pr_info("legion_laptop: platform_driver_register failed\n");
 		return err;
 	}
-
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 0, 0)
+	static struct platform_device *legion_pdev;
+  legion_pdev = platform_device_register_simple("legion", -1, NULL, 0);
+	if (IS_ERR(legion_pdev)) {
+		pr_err("Failed to allocate virtual legion device\n");
+		platform_driver_unregister(&legion_driver);
+		return PTR_ERR(legion_pdev);
+	}
+#endif
 	return 0;
 }
 
@@ -6494,6 +6586,9 @@ module_init(legion_init);
 static void __exit legion_exit(void)
 {
 	platform_driver_unregister(&legion_driver);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 0 , 0)
+	platform_device_unregister(_priv.platform_device);
+#endif
 	pr_info("legion_laptop exit\n");
 }
 

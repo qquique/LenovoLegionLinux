@@ -24,7 +24,7 @@ kernel_version = tuple(map(int,os.uname().release.split('-')[0].split('.')))
 DEFAULT_ENCODING = "utf8"
 DEFAULT_CONFIG_DIR = "/etc/legion_linux"
 if kernel_version >= (7, 0, 0):
-    LEGION_SYS_BASEPATH = '/sys/module/legion_laptop/drivers/platform:legion/VPC2004:00'
+    LEGION_SYS_BASEPATH = '/sys/module/legion_laptop/drivers/platform:legion/legion'
 else:
     LEGION_SYS_BASEPATH = '/sys/module/legion_laptop/drivers/platform:legion/PNP0C09:00'
 IDEAPAD_SYS_BASEPATH = '/sys/bus/platform/drivers/ideapad_acpi/VPC2004:00'
